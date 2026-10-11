@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -r \"module \" /Work/Projects/Arcade-Kangaroo_MiSTer/rtl/*.sv)",
+      "Bash(wc:*)"
+    ]
+  }
+}
