@@ -8,15 +8,19 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/Kangaroo_SND.sv
 set_global_assignment -name QIP_FILE rtl/cpu/T80/T80.qip
 set_global_assignment -name QIP_FILE rtl/sound/v_sound.qip
 
-set_global_assignment -name VERILOG_FILE rtl/pause.v
-set_global_assignment -name VERILOG_FILE rtl/nvram.v
-set_global_assignment -name VERILOG_FILE rtl/hiscore.v
+set_global_assignment -name VERILOG_FILE rtl/mister_custom/pause.v
+set_global_assignment -name VERILOG_FILE rtl/mister_custom/nvram.v
+set_global_assignment -name VERILOG_FILE rtl/mister_custom/hiscore.v
+# CTL-2026-10-25: shared input library (controllers.sv v2)
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mister_custom/controllers.sv
 
 # MB8841: SV core + wrapper, replacing darfpga's mb88.vhd (BRAM read-after-write hazard).
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/mb88_sv/mb88_core.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/mb88_sv/mb88.sv
 
-set_global_assignment -name VHDL_FILE rtl/ram_rom/dpram_dc.vhd
+# DPRAMSV-2026-10-25: VHDL dpram_dc replaced by the SystemVerilog one (same ports/generics + byteena); original:
+# set_global_assignment -name VHDL_FILE rtl/ram_rom/dpram_dc.vhd
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/dpram_dc.sv
 set_global_assignment -name VHDL_FILE rtl/ram_rom/spram.vhd
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/ram_rom/rom_loader.sv
 

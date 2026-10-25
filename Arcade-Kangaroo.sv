@@ -161,42 +161,61 @@ wire reset = RESET | status[0] | buttons[1] | ioctl_download;
 
 ///////////////////         Keyboard           //////////////////
 
-reg btn_up       = 0;
-reg btn_down     = 0;
-reg btn_left     = 0;
-reg btn_right    = 0;
-reg btn_fire     = 0;
-reg btn_fire2    = 0;
-reg btn_coin1    = 0;
-reg btn_coin2    = 0;
-reg btn_1p_start = 0;
-reg btn_2p_start = 0;
-reg btn_pause    = 0;
-reg btn_service  = 0;
-
-wire pressed = ~ps2_key[9];
-wire [7:0] code = ps2_key[7:0];
-always @(posedge CLK_10M) begin
-	reg old_state;
-	old_state <= ps2_key[10];
-	if(old_state != ps2_key[10]) begin
-		case(code)
-			'h16: btn_1p_start <= pressed; // 1 = Player 1 Start
-			'h1E: btn_2p_start <= pressed; // 2 = Player 2 Start
-			'h2E: btn_coin1    <= pressed; // 5 = Coin Input 1
-			'h36: btn_coin2    <= pressed; // 6 = Coin Input 2
-			'h4D: btn_pause    <= pressed; // P = Pause
-			'h46: btn_service  <= pressed; // 9 = Test Advance
-
-			'h75: btn_up       <= pressed; // up         = Up
-			'h72: btn_down     <= pressed; // down       = Down
-			'h6B: btn_left     <= pressed; // left       = Left
-			'h74: btn_right    <= pressed; // right      = Right
-			'h14: btn_fire     <= pressed; // ctrl       = Draw Slow
-			'h12: btn_fire2    <= pressed; // left shift = Draw Fast
-		endcase 
-	end
-end
+// CTL-2026-10-25: keyboard -> controllers.sv ctl_keyboard (keys now act on press), left Shift through its extra-key
+// table; the instance sits after pause_cpu below. Original commented out below.
+// reg btn_up       = 0;
+// reg btn_down     = 0;
+// reg btn_left     = 0;
+// reg btn_right    = 0;
+// reg btn_fire     = 0;
+// reg btn_fire2    = 0;
+// reg btn_coin1    = 0;
+// reg btn_coin2    = 0;
+// reg btn_1p_start = 0;
+// reg btn_2p_start = 0;
+// reg btn_pause    = 0;
+// reg btn_service  = 0;
+//
+// wire pressed = ~ps2_key[9];
+// wire [7:0] code = ps2_key[7:0];
+// always @(posedge CLK_10M) begin
+// 	reg old_state;
+// 	old_state <= ps2_key[10];
+// 	if(old_state != ps2_key[10]) begin
+// 		case(code)
+// 			'h16: btn_1p_start <= pressed; // 1 = Player 1 Start
+// 			'h1E: btn_2p_start <= pressed; // 2 = Player 2 Start
+// 			'h2E: btn_coin1    <= pressed; // 5 = Coin Input 1
+// 			'h36: btn_coin2    <= pressed; // 6 = Coin Input 2
+// 			'h4D: btn_pause    <= pressed; // P = Pause
+// 			'h46: btn_service  <= pressed; // 9 = Test Advance
+//
+// 			'h75: btn_up       <= pressed; // up         = Up
+// 			'h72: btn_down     <= pressed; // down       = Down
+// 			'h6B: btn_left     <= pressed; // left       = Left
+// 			'h74: btn_right    <= pressed; // right      = Right
+// 			'h14: btn_fire     <= pressed; // ctrl       = Draw Slow
+// 			'h12: btn_fire2    <= pressed; // left shift = Draw Fast
+// 		endcase 
+// 	end
+// end
+// kb: [0] up [1] down [2] left [3] right [4] Ctrl [5] Alt [6] 1 [7] 2 [8] 5 [9] 6 [10] 9 [11] T [12] P
+// kbx: [0] left Shift (Draw Fast, not wired to the board)
+/* verilator lint_off UNUSED */
+wire [12:0] kb;                     // Alt and T are not used on this board
+wire  [0:0] kbx;
+/* verilator lint_on UNUSED */
+wire btn_up       = kb[0];
+wire btn_down     = kb[1];
+wire btn_left     = kb[2];
+wire btn_right    = kb[3];
+wire btn_fire     = kb[4];
+wire btn_coin1    = kb[8];
+wire btn_coin2    = kb[9];
+wire btn_1p_start = kb[6];
+wire btn_2p_start = kb[7];
+wire btn_pause    = kb[12];
+wire btn_service  = kb[10];
 
 //////////////////  Game select (mod byte, MRA <rom index="5">)  ///////////////////////////
 // MRA `<rom index="5"><part>01</part></rom>` => Funky Fish; absent => Kangaroo (mod = 0).
@@ -239,6 +258,9 @@ wire m_service  = btn_service                  ;
 
 // PAUSE SYSTEM
 wire pause_cpu;
+// CTL-2026-10-25: keyboard (see Keyboard above); held keys keep tracking while paused
+ctl_keyboard #(.NX(1), .NXO(1), .XKEYS(24'h10_12_00)) u_kb(.clk(CLK_10M), .ps2_key(ps2_key), .pause(pause_cpu), .kb(kb),
+	.kbx(kbx));
 wire [23:0] rgb_out;
 pause #(8,8,8,10) pause
 (
