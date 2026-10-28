@@ -161,44 +161,7 @@ wire reset = RESET | status[0] | buttons[1] | ioctl_download;
 
 ///////////////////         Keyboard           //////////////////
 
-// CTL-2026-10-25: keyboard -> controllers.sv ctl_keyboard (keys now act on press), left Shift through its extra-key
-// table; the instance sits after pause_cpu below. Original commented out below.
-// reg btn_up       = 0;
-// reg btn_down     = 0;
-// reg btn_left     = 0;
-// reg btn_right    = 0;
-// reg btn_fire     = 0;
-// reg btn_fire2    = 0;
-// reg btn_coin1    = 0;
-// reg btn_coin2    = 0;
-// reg btn_1p_start = 0;
-// reg btn_2p_start = 0;
-// reg btn_pause    = 0;
-// reg btn_service  = 0;
-//
-// wire pressed = ~ps2_key[9];
-// wire [7:0] code = ps2_key[7:0];
-// always @(posedge CLK_10M) begin
-// 	reg old_state;
-// 	old_state <= ps2_key[10];
-// 	if(old_state != ps2_key[10]) begin
-// 		case(code)
-// 			'h16: btn_1p_start <= pressed; // 1 = Player 1 Start
-// 			'h1E: btn_2p_start <= pressed; // 2 = Player 2 Start
-// 			'h2E: btn_coin1    <= pressed; // 5 = Coin Input 1
-// 			'h36: btn_coin2    <= pressed; // 6 = Coin Input 2
-// 			'h4D: btn_pause    <= pressed; // P = Pause
-// 			'h46: btn_service  <= pressed; // 9 = Test Advance
-//
-// 			'h75: btn_up       <= pressed; // up         = Up
-// 			'h72: btn_down     <= pressed; // down       = Down
-// 			'h6B: btn_left     <= pressed; // left       = Left
-// 			'h74: btn_right    <= pressed; // right      = Right
-// 			'h14: btn_fire     <= pressed; // ctrl       = Draw Slow
-// 			'h12: btn_fire2    <= pressed; // left shift = Draw Fast
-// 		endcase 
-// 	end
-// end
+// ctl_keyboard (controllers.sv; its instance sits after pause_cpu below), left Shift through its extra-key table
 // kb: [0] up [1] down [2] left [3] right [4] Ctrl [5] Alt [6] 1 [7] 2 [8] 5 [9] 6 [10] 9 [11] T [12] P
 // kbx: [0] left Shift (Draw Fast, not wired to the board)
 /* verilator lint_off UNUSED */
@@ -258,7 +221,7 @@ wire m_service  = btn_service                  ;
 
 // PAUSE SYSTEM
 wire pause_cpu;
-// CTL-2026-10-25: keyboard (see Keyboard above); held keys keep tracking while paused
+// keyboard (see Keyboard above); held keys keep tracking while paused
 ctl_keyboard #(.NX(1), .NXO(1), .XKEYS(24'h10_12_00)) u_kb(.clk(CLK_10M), .ps2_key(ps2_key), .pause(pause_cpu), .kb(kb),
 	.kbx(kbx));
 wire [23:0] rgb_out;
@@ -279,7 +242,7 @@ wire [7:0] r, g, b;
 wire ce_pix;
 
 // 2x pixel clock: arcade_video renders 512 px/line (each of the 256 source columns doubled)
-// for the MAME-style dimmed-copy interleave, and the scaler shrinks it back. ce_pix must be a
+// for the dimmed-copy interleave, and the scaler shrinks it back. ce_pix must be a
 // CLK_40M-domain pulse; phase ==2 samples after the core's RGB has settled.
 reg [1:0] ce_pix_div = 2'd0;
 always @(posedge CLK_40M) ce_pix_div <= ce_pix_div + 1'd1;
@@ -316,7 +279,7 @@ end
 wire [7:0] sw0 = dip_sw[0];
 
 //Instantiate Kangaroo top-level game module
-Kangaroo kangaroo_inst
+kangaroo_dispatcher kangaroo_inst
 (
 	.reset(~reset),       // MiSTer reset is active-high; invert for active-low game modules
 
