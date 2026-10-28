@@ -37,18 +37,8 @@ module Kangaroo_CPU
     output  [7:0] sound_latch,      // Data to sound CPU
     output        sound_latch_wr,   // Strobe: sound latch written
 
-    // Blitter ROMs — directly memory-mapped, loaded via index 2
-    input         blit0_cs_i, blit1_cs_i, blit2_cs_i, blit3_cs_i,
-    // Main program ROMs — loaded via index 0
-    input         rom0_cs_i, rom1_cs_i, rom2_cs_i,
-    input         rom3_cs_i, rom4_cs_i, rom5_cs_i,
-    input  [24:0] ioctl_addr,
-    input   [7:0] ioctl_data,
-    input         ioctl_wr,
-
-    // MCU (MB8841) — index 6 ROM download + presence flag (original Kangaroo HW only)
+    // MCU (MB8841) presence flag (original Kangaroo HW only)
     input         mcu_present,    // 1 = MB8841 fitted (kangaroo/kangarooa); 0 = bootleg / Funky Fish
-    input         mcurom_wr,      // ioctl_wr for index 6 (prog 0x000-0x7FF + protrom 0x800-0xFFF)
 
     input         pause,
     input         crt_flip,
@@ -57,7 +47,29 @@ module Kangaroo_CPU
     input  [15:0] hs_address,
     input   [7:0] hs_data_in,
     output  [7:0] hs_data_out,
-    input         hs_write
+    input         hs_write,
+
+    // shared CPU / MCU pool (rtl/kangaroo_dispatcher.sv)
+    output chip_pool_pkg::z80r_i_t z80_0_i,
+    input  chip_pool_pkg::z80r_o_t z80_0_o,
+    output chip_pool_pkg::mb88_i_t mb88_0_i,
+    input  chip_pool_pkg::mb88_o_t mb88_0_o,
+
+    // shared ROM blocks, read ports: program ROMs and the CPU's blitter-ROM window (all at cpu_A[11:0]), the blitter's
+    // own copy of the blitter ROMs, MB8841 program and protection PROM
+    output [11:0] rom_cpu_a,
+    input   [7:0] rom0_d, rom1_d, rom2_d, rom3_d, rom4_d, rom5_d,
+    input   [7:0] blit0_d, blit1_d, blit2_d, blit3_d,
+    output [13:0] blitrom_a,
+    input   [7:0] blitrom_d,
+    output [10:0] mcu_prog_a,
+    input   [7:0] mcu_prog_d,
+    output [10:0] mcu_prot_a,
+    input   [7:0] mcu_prot_d,
+
+    // board RAM pool: 0 = work RAM (port B hiscore), 1-8 = VRAM byte lanes
+    output ram_pool_pkg::pram_i_t [8:0] pr_i,
+    input  ram_pool_pkg::pram_o_t [8:0] pr_o
 );
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
@@ -81,24 +93,9 @@ wire [15:0] cpu_A;
 wire  [7:0] cpu_Dout;
 wire n_m1, n_mreq, n_iorq, n_rd, n_wr, n_rfsh;
 
-T80s #(.Mode(0), .T2Write(1), .IOWait(1)) main_cpu
-(
-    .RESET_n(reset),
-    .CLK(clk_10m),
-    .CEN(cen_2m5 & ~pause),
-    .INT_n(n_irq),
-    .NMI_n(n_nmi),
-    .BUSRQ_n(1'b1),
-    .M1_n(n_m1),
-    .MREQ_n(n_mreq),
-    .IORQ_n(n_iorq),
-    .RD_n(n_rd),
-    .WR_n(n_wr),
-    .RFSH_n(n_rfsh),
-    .A(cpu_A),
-    .DI(cpu_Din),
-    .DO(cpu_Dout)
-);
+assign n_m1 = z80_0_o.m1_n; assign n_mreq = z80_0_o.mreq_n; assign n_iorq = z80_0_o.iorq_n;
+assign n_rd = z80_0_o.rd_n; assign n_wr = z80_0_o.wr_n; assign n_rfsh = z80_0_o.rfsh_n;
+assign cpu_A = z80_0_o.a; assign cpu_Dout = z80_0_o.dout;
 
 //------------------------------------------------------ Address Decoding ------------------------------------------------------//
 
@@ -169,74 +166,45 @@ assign rom_D = (cpu_A[15:12] == 4'h0) ? rom0_D :
                (cpu_A[15:12] == 4'h5) ? rom5_D :
                8'hFF;
 
-eprom_4k rom0 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom0_D),
-               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-               .CS_DL(rom0_cs_i), .WR(ioctl_wr));
-eprom_4k rom1 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom1_D),
-               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-               .CS_DL(rom1_cs_i), .WR(ioctl_wr));
-eprom_4k rom2 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom2_D),
-               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-               .CS_DL(rom2_cs_i), .WR(ioctl_wr));
-eprom_4k rom3 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom3_D),
-               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-               .CS_DL(rom3_cs_i), .WR(ioctl_wr));
-eprom_4k rom4 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom4_D),
-               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-               .CS_DL(rom4_cs_i), .WR(ioctl_wr));
-eprom_4k rom5 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(rom5_D),
-               .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-               .CS_DL(rom5_cs_i), .WR(ioctl_wr));
+assign rom_cpu_a = cpu_A[11:0];
+assign rom0_D = rom0_d;
+assign rom1_D = rom1_d;
+assign rom2_D = rom2_d;
+assign rom3_D = rom3_d;
+assign rom4_D = rom4_d;
+assign rom5_D = rom5_d;
 
 //------------------------------------------------------- Blitter ROMs --------------------------------------------------------//
 
 // Blitter has 4 x 4KB ROMs, banked into 0xC000-0xDFFF via bank select (video_control[8])
-// MAME banks one contiguous 8K window over the 16K image (kangaroo.cpp:427, :532), and
-// the image loads v0,v2,v1,v3 (kangaroo.cpp:772-775), so blit0=v0 blit1=v2 blit2=v1 blit3=v3:
+// One contiguous 8K window is banked over the 16K image, and
+// the image loads v0,v2,v1,v3, so blit0=v0 blit1=v2 blit2=v1 blit3=v3:
 //   entry 0 (base+0000): C000=blit0(v0)  D000=blit1(v2)
 //   entry 1 (base+2000): C000=blit2(v1)  D000=blit3(v3)
 
 wire [7:0] blit0_D, blit1_D, blit2_D, blit3_D;
-wire blit_bank_hi = (video_control[8] & 8'h05) == 0;   // MAME: (data & 0x05) ? 0 : 1
+wire blit_bank_hi = (video_control[8] & 8'h05) == 0;   // (data & 0x05) ? 0 : 1
 
 assign blitbank_D = cpu_A[12] ?
     (blit_bank_hi ? blit3_D : blit1_D) :   // D000-DFFF: v3 / v2
     (blit_bank_hi ? blit2_D : blit0_D);    // C000-CFFF: v1 / v0
 
-eprom_4k blit0 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit0_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-                .CS_DL(blit0_cs_i), .WR(ioctl_wr));
-eprom_4k blit1 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit1_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-                .CS_DL(blit1_cs_i), .WR(ioctl_wr));
-eprom_4k blit2 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit2_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-                .CS_DL(blit2_cs_i), .WR(ioctl_wr));
-eprom_4k blit3 (.ADDR(cpu_A[11:0]), .CLK(clk_10m), .DATA(blit3_D),
-                .ADDR_DL(ioctl_addr), .CLK_DL(clk_10m), .DATA_IN(ioctl_data),
-                .CS_DL(blit3_cs_i), .WR(ioctl_wr));
+assign blit0_D = blit0_d;
+assign blit1_D = blit1_d;
+assign blit2_D = blit2_d;
+assign blit3_D = blit3_d;
 
 //------------------------------------------------------------ RAM ------------------------------------------------------------//
 
 // Work RAM (0xE000-0xE3FF, 1KB)
-dpram_dc #(.widthad_a(10)) workram
-(
-    .clock_a(clk_10m),
-    .wren_a(cs_workram & ~n_wr),
-    .address_a(cpu_A[9:0]),
-    .data_a(cpu_Dout),
-    .q_a(workram_D),
-
-    .clock_b(clk_10m),
-    .wren_b(hs_write),
-    .address_b(hs_address[9:0]),
-    .data_b(hs_data_in),
-    .q_b(hs_data_out)
-);
+assign pr_i[0].a_addr = {5'd0, cpu_A[9:0]}; assign pr_i[0].a_d = cpu_Dout; assign pr_i[0].a_we = cs_workram & ~n_wr;
+assign pr_i[0].b_addr = {5'd0, hs_address[9:0]}; assign pr_i[0].b_d = hs_data_in; assign pr_i[0].b_we = hs_write;
+assign workram_D = pr_o[0].a_q;
+assign hs_data_out = pr_o[0].b_q;
 
 //--------------------------------------------------- Video Control Registers --------------------------------------------------//
 
-// MAME: m_video_control[0..10], written at 0xE800-0xE80A
+// video_control[0..10], written at 0xE800-0xE80A
 // Only bits [3:0] of the address select the register (mirrored with 0x03F0)
 reg [7:0] video_control [0:10];
 integer vc_i;
@@ -275,7 +243,6 @@ assign sound_latch_wr = slatch_wr_pulse;
 //------------------------------------------------------- Bootleg NMI ---------------------------------------------------------//
 
 // The bootleg has no MCU. It pulses NMI at reset to make the game boot.
-// MAME: m_maincpu->pulse_input_line(INPUT_LINE_NMI, attotime::zero);
 // On original HW (mcu_present) the MB8841 drives NMI instead (see MCU block below) — this pulse is unused.
 reg [7:0] nmi_boot_cnt = 8'd0;
 reg n_nmi_boot = 1'b1;
@@ -297,17 +264,13 @@ end
 wire n_nmi = mcu_present ? mcu_nmi_n : n_nmi_boot;
 
 //-------------------------------------------------------- MB8841 MCU ---------------------------------------------------------//
-// Original Kangaroo (TVG-1-CPU-B, IC29) fits an MB8841 microcomputer used for protection. Per MAME
-// kangaroo.cpp:153 — besides the boot NMI it "acts like a timer to determine the intervals of the big ape
-// enemy appearing." Wiring mirrors kangaroo_mcu_state (kangaroo.cpp:455-504):
-//   CPU wr 0xEF00 -> main_data                                            (mcu_w)
-//   CPU rd 0xEF00 <- R0 port latch                                        (mcu_r)
-//   K port = 0xF & (R2.0 ? main_data : F) & (~R3.0 ? protrom[addr] : F)   (mcu_port_k_r)
-//   O port (oh:ol) -> protrom addr A0-A7 ; R3.1 -> A8 (A9,A10=GND)        (mcu_port_o_w / mcu_port_r_w)
-//   R3.3 -> main-CPU NMI                                                  (mcu_port_r_w)
-// MCU clock = 10MHz/4 = 2.5MHz (MAME MB8841(.., 10_MHz_XTAL/4)). Held in reset when not fitted.
-// darfpga mb88 has separate R in/out ports and no external drive on kangaroo's R pins, so tie in<-out
-// (MAME's read_r returns the output latch). Nothing drives the MCU /IRQ or /TC externally on kangaroo.
+// Original Kangaroo (TVG-1-CPU-B, IC29) fits an MB8841 used for protection: besides the boot NMI it times the big
+// ape's appearances. Wiring:
+//   CPU wr 0xEF00 -> main_data;  CPU rd 0xEF00 <- R0 port latch
+//   K port = 0xF & (R2.0 ? main_data : F) & (~R3.0 ? protrom[addr] : F)
+//   O port (oh:ol) -> protrom A0-A7, R3.1 -> A8 (A9, A10 = GND);  R3.3 -> main-CPU NMI
+// MCU clock = 10 MHz / 4 = 2.5 MHz, held in reset when not fitted. The R inputs read back the output latches (nothing
+// drives the R pins externally); /IRQ and /TC are not driven.
 
 // `ena` is one MB88 machine cycle. MAME converts pin clocks at (clocks+5)/6, so the
 // 2.5 MHz pin rate is divided by 6. The /32 timer prescaler lives inside the mb88.sv wrapper.
@@ -338,51 +301,21 @@ wire  [3:0] mcu_k = 4'hF
 wire mcu_nmi_n = ~r3_out[3];                  // R3.3 asserts NMI (active high) -> n_nmi low
 assign mcu_dout = mcu_present ? {4'h0, r0_out} : 8'h00;
 
-mb88 mcu
-(
-    .clock      (clk_10m),
-    .ena        (mcu_ena),
-    .reset_n    (mcu_reset_n),
-    .ram_clr    (1'b0),               // MB88-2026-10-24: fleet mb88 power-on RAM clear, unused here
+assign {r0_out, r1_out, r2_out, r3_out} = {mb88_0_o.r_out[3:0], mb88_0_o.r_out[7:4], mb88_0_o.r_out[11:8], mb88_0_o.r_out[15:12]};
+assign {mcu_oh, mcu_ol} = mb88_0_o.o;
+assign mcu_rom_addr = mb88_0_o.rom_a;
 
-    .r0_port_in (r0_out), .r1_port_in (r1_out), .r2_port_in (r2_out), .r3_port_in (r3_out),
-    .r0_port_out(r0_out), .r1_port_out(r1_out), .r2_port_out(r2_out), .r3_port_out(r3_out),
-    .k_port_in  (mcu_k),
-    .ol_port_out(mcu_ol), .oh_port_out(mcu_oh),
-    .p_port_out (),
+// MCU program ROM (dispatcher block: index 6 000-7FF)
+assign mcu_prog_a = mcu_rom_addr;
+assign mcu_rom_q = mcu_prog_d;
 
-    .stby_n     (1'b1),
-    .tc_n       (1'b1),
-    .irq_n      (1'b1),
-    .sc_in_n    (1'b1),
-    .si_n       (1'b1),
-    .sc_out_n   (),
-    .so_n       (),
-    .to_n       (),
-
-    .rom_addr   (mcu_rom_addr),
-    .rom_data   (mcu_rom_q)
-);
-
-// MCU internal program ROM (2KB) — index 6, ioctl_addr[11]==0
-dpram_dc #(.widthad_a(11), .width_a(8)) mcu_prog
-(
-    .clock_a(clk_10m), .address_a(mcu_rom_addr), .data_a(8'd0), .wren_a(1'b0), .q_a(mcu_rom_q),
-    .clock_b(clk_10m), .address_b(ioctl_addr[10:0]), .data_b(ioctl_data),
-    .wren_b(mcurom_wr & ~ioctl_addr[11]), .q_b()
-);
-
-// MCU protection PROM (2KB) — index 6, ioctl_addr[11]==1
-dpram_dc #(.widthad_a(11), .width_a(8)) mcu_prot
-(
-    .clock_a(clk_10m), .address_a(protrom_addr), .data_a(8'd0), .wren_a(1'b0), .q_a(protrom_q),
-    .clock_b(clk_10m), .address_b(ioctl_addr[10:0]), .data_b(ioctl_data),
-    .wren_b(mcurom_wr & ioctl_addr[11]), .q_b()
-);
+// MCU protection PROM (dispatcher block: index 6 800-FFF)
+assign mcu_prot_a = protrom_addr;
+assign protrom_q = mcu_prot_d;
 
 //-------------------------------------------------------- VBlank IRQ ----------------------------------------------------------//
 
-// MAME: standard IM1 interrupt, RST 38h every vblank
+// Standard IM1 interrupt, RST 38h every vblank
 // IRQ fires on vblank rising edge
 reg n_irq = 1'b1;
 reg vblank_last = 0;
@@ -435,7 +368,7 @@ always_ff @(posedge clk_10m) begin
 end
 
 // Sync and blank generation
-// MAME visible: x = 0*2 to 256*2-1 = 0 to 511, y = 8 to 247
+// Visible: x = 0*2 to 256*2-1 = 0 to 511, y = 8 to 247
 // The scanout pipeline is 2 clk_10m cycles deep, so hblank/hsync are delayed to match.
 // This is a latency match, not a window shift; the v axis has no such latency, so
 // vblank/vsync stay combinational and the vblank IRQ uses the undelayed video_vblank.
@@ -500,7 +433,7 @@ assign video_vsync  = (v_cnt >= vs_start) & (v_cnt < vs_end);   // DIAG
 //--------------------------------------------------------- Video RAM ----------------------------------------------------------//
 
 // Kangaroo VRAM: 16384 addresses × 32 bits (4 bytes per word, 2 planes × 4 pixels)
-// Split into two 16-bit-wide dpram_dc instances (lo=bytes 0,1  hi=bytes 2,3)
+// Two 16-bit halves (lo = bytes 0,1, hi = bytes 2,3), each held as two byte lanes of the RAM pool
 // Port A = CPU/blitter read-modify-write
 // Port B = video scanout (read-only)
 
@@ -511,55 +444,39 @@ reg  [15:0] vram_lo_da, vram_hi_da;
 reg         vram_we_a;
 wire [13:0] vram_addr_b;               // Scanout address (active accent accent driven by compositing logic)
 
-dpram_dc #(.widthad_a(14), .width_a(16)) vram_lo
-(
-    .clock_a(clk_10m),
-    .address_a(vram_addr_a),
-    .data_a(vram_lo_da),
-    .wren_a(vram_we_a),
-    .q_a(vram_lo_qa),
+assign pr_i[1].a_addr = {1'd0, vram_addr_a}; assign pr_i[1].a_d = vram_lo_da[7:0]; assign pr_i[1].a_we = vram_we_a;
+assign pr_i[1].b_addr = {1'd0, vram_addr_b}; assign pr_i[1].b_d = 8'd0; assign pr_i[1].b_we = 1'b0;
+assign pr_i[2].a_addr = {1'd0, vram_addr_a}; assign pr_i[2].a_d = vram_lo_da[15:8]; assign pr_i[2].a_we = vram_we_a;
+assign pr_i[2].b_addr = {1'd0, vram_addr_b}; assign pr_i[2].b_d = 8'd0; assign pr_i[2].b_we = 1'b0;
+assign vram_lo_qa = {pr_o[2].a_q, pr_o[1].a_q};
+assign vram_lo_qb = {pr_o[2].b_q, pr_o[1].b_q};
 
-    .clock_b(clk_10m),
-    .address_b(vram_addr_b),
-    .data_b(16'd0),
-    .wren_b(1'b0),
-    .q_b(vram_lo_qb)
-);
-
-dpram_dc #(.widthad_a(14), .width_a(16)) vram_hi
-(
-    .clock_a(clk_10m),
-    .address_a(vram_addr_a),
-    .data_a(vram_hi_da),
-    .wren_a(vram_we_a),
-    .q_a(vram_hi_qa),
-
-    .clock_b(clk_10m),
-    .address_b(vram_addr_b),
-    .data_b(16'd0),
-    .wren_b(1'b0),
-    .q_b(vram_hi_qb)
-);
+assign pr_i[3].a_addr = {1'd0, vram_addr_a}; assign pr_i[3].a_d = vram_hi_da[7:0]; assign pr_i[3].a_we = vram_we_a;
+assign pr_i[3].b_addr = {1'd0, vram_addr_b}; assign pr_i[3].b_d = 8'd0; assign pr_i[3].b_we = 1'b0;
+assign pr_i[4].a_addr = {1'd0, vram_addr_a}; assign pr_i[4].a_d = vram_hi_da[15:8]; assign pr_i[4].a_we = vram_we_a;
+assign pr_i[4].b_addr = {1'd0, vram_addr_b}; assign pr_i[4].b_d = 8'd0; assign pr_i[4].b_we = 1'b0;
+assign vram_hi_qa = {pr_o[4].a_q, pr_o[3].a_q};
+assign vram_hi_qb = {pr_o[4].b_q, pr_o[3].b_q};
 
 // Mirror instances, written identically on port A, so plane B gets its own same-latency
 // read port: plane A reads vram_lo/hi:B and plane B vram_lo2/hi2:B, aligned to one column.
 wire [15:0] vram2_lo_qb, vram2_hi_qb;   // plane-B mirror scanout read data
 wire [13:0] vram_addr_b2;               // plane B scanout address (mirror port B)
 
-dpram_dc #(.widthad_a(14), .width_a(16)) vram_lo2
-(
-    .clock_a(clk_10m), .address_a(vram_addr_a), .data_a(vram_lo_da), .wren_a(vram_we_a), .q_a(),
-    .clock_b(clk_10m), .address_b(vram_addr_b2), .data_b(16'd0), .wren_b(1'b0), .q_b(vram2_lo_qb)
-);
-dpram_dc #(.widthad_a(14), .width_a(16)) vram_hi2
-(
-    .clock_a(clk_10m), .address_a(vram_addr_a), .data_a(vram_hi_da), .wren_a(vram_we_a), .q_a(),
-    .clock_b(clk_10m), .address_b(vram_addr_b2), .data_b(16'd0), .wren_b(1'b0), .q_b(vram2_hi_qb)
-);
+assign pr_i[5].a_addr = {1'd0, vram_addr_a}; assign pr_i[5].a_d = vram_lo_da[7:0]; assign pr_i[5].a_we = vram_we_a;
+assign pr_i[5].b_addr = {1'd0, vram_addr_b2}; assign pr_i[5].b_d = 8'd0; assign pr_i[5].b_we = 1'b0;
+assign pr_i[6].a_addr = {1'd0, vram_addr_a}; assign pr_i[6].a_d = vram_lo_da[15:8]; assign pr_i[6].a_we = vram_we_a;
+assign pr_i[6].b_addr = {1'd0, vram_addr_b2}; assign pr_i[6].b_d = 8'd0; assign pr_i[6].b_we = 1'b0;
+assign vram2_lo_qb = {pr_o[6].b_q, pr_o[5].b_q};
+assign pr_i[7].a_addr = {1'd0, vram_addr_a}; assign pr_i[7].a_d = vram_hi_da[7:0]; assign pr_i[7].a_we = vram_we_a;
+assign pr_i[7].b_addr = {1'd0, vram_addr_b2}; assign pr_i[7].b_d = 8'd0; assign pr_i[7].b_we = 1'b0;
+assign pr_i[8].a_addr = {1'd0, vram_addr_a}; assign pr_i[8].a_d = vram_hi_da[15:8]; assign pr_i[8].a_we = vram_we_a;
+assign pr_i[8].b_addr = {1'd0, vram_addr_b2}; assign pr_i[8].b_d = 8'd0; assign pr_i[8].b_we = 1'b0;
+assign vram2_hi_qb = {pr_o[8].b_q, pr_o[7].b_q};
 
 //------------------------------------------------ VRAM Expand/Mask Functions --------------------------------------------------//
 
-// MAME videoram_write expand logic — pure combinational functions
+// Video RAM write expansion — pure combinational functions
 // Expand 8-bit CPU data to 32-bit (DCBADCBA → 4 bytes)
 function [31:0] expand_data;
     input [7:0] data;
@@ -594,33 +511,13 @@ endfunction
 
 //------------------------------------------------------ Blitter ROM -----------------------------------------------------------//
 
-// 16KB blitter ROM — single dpram_dc, port A = blitter read, port B = ioctl download
+// 16KB blitter ROM (dispatcher ROM block): the blitter reads it here
 wire [7:0] blitrom_qa;
 reg  [13:0] blitrom_addr_a;
 
-// Compute ioctl write address for blitter ROM download
-// blit0 → 0x0000-0x0FFF, blit1 → 0x1000-0x1FFF, blit2 → 0x2000-0x2FFF, blit3 → 0x3000-0x3FFF
-wire [13:0] blitrom_dl_addr = blit0_cs_i ? {2'b00, ioctl_addr[11:0]} :
-                               blit1_cs_i ? {2'b01, ioctl_addr[11:0]} :
-                               blit2_cs_i ? {2'b10, ioctl_addr[11:0]} :
-                               blit3_cs_i ? {2'b11, ioctl_addr[11:0]} :
-                               14'd0;
-wire blitrom_dl_wr = ioctl_wr & (blit0_cs_i | blit1_cs_i | blit2_cs_i | blit3_cs_i);
 
-dpram_dc #(.widthad_a(14), .width_a(8)) blitrom_mem
-(
-    .clock_a(clk_10m),
-    .address_a(blitrom_addr_a),
-    .data_a(8'd0),
-    .wren_a(1'b0),
-    .q_a(blitrom_qa),
-
-    .clock_b(clk_10m),
-    .address_b(blitrom_dl_addr),
-    .data_b(ioctl_data),
-    .wren_b(blitrom_dl_wr),
-    .q_b()
-);
+assign blitrom_a = blitrom_addr_a;
+assign blitrom_qa = blitrom_d;
 
 //------------------------------------------------------ DMA Blitter -----------------------------------------------------------//
 
@@ -659,7 +556,7 @@ reg [7:0]  blit_y_cnt;
 reg [15:0] blit_cur_src;
 reg [15:0] blit_cur_dst;
 reg [7:0]  blit_adj_mask;
-// MAME's blitter_execute() is synchronous inside the $E805 write, so software can issue
+// The reference blitter finishes inside the $E805 write, so software issues
 // the next trigger a few instructions later. Ours takes ~1200 clocks for a 28x7 sprite,
 // so a trigger arriving mid-blit is queued rather than dropped. Stalling the CPU is not
 // an option here: this blitter is ~6 clocks/pixel.
@@ -749,7 +646,7 @@ always_ff @(posedge clk_10m) begin
 
             //--- Blitter DMA ---
             ST_BLIT_SETUP: begin
-                // Adjust mask per MAME: OR top/bottom 2-bit pairs during DMA
+                // Adjust mask: OR top/bottom 2-bit pairs during DMA
                 if (blit_adj_mask[3:2] != 0) blit_adj_mask[3:2] <= 2'b11;
                 if (blit_adj_mask[1:0] != 0) blit_adj_mask[1:0] <= 2'b11;
                 // Start first pixel: present low-half ROM addr
@@ -792,11 +689,11 @@ always_ff @(posedge clk_10m) begin
                 // clear pixel first
                 rmw_expdata   = 32'h00000000;
                 rmw_layermask = build_layermask(blit_adj_mask[3:0]);
-                // Apply low-half blit: LOW-half ROM pairs with mask & 0x05 (kangaroo.cpp:344)
+                // Apply low-half blit: LOW-half ROM pairs with mask & 0x05
                 rmw_expdata   = expand_data(blit_rom_data_lo);
                 rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b0101);
                 rmw_new_word  = (rmw_old_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
-                // Now apply high-half blit: HIGH-half ROM pairs with mask & 0x0a (kangaroo.cpp:345)
+                // Now apply high-half blit: HIGH-half ROM pairs with mask & 0x0a
                 rmw_expdata   = expand_data(blit_rom_data_hi);
                 rmw_layermask = build_layermask(blit_adj_mask[3:0] & 4'b1010);
                 rmw_new_word  = (rmw_new_word & ~rmw_layermask) | (rmw_expdata & rmw_layermask);
@@ -844,12 +741,12 @@ end
 
 //----------------------------------------------- Pixel Compositing (screen_update) --------------------------------------------//
 
-// MAME screen_update variables derived from video_control registers
+// Screen-update variables derived from the video_control registers
 wire [7:0] scrolly = video_control[6];
 wire [7:0] scrollx = video_control[7];
-wire [2:0] maska = (video_control[10] & 8'h28) >> 3;   // MAME exact
+wire [2:0] maska = (video_control[10] & 8'h28) >> 3;
 wire [2:0] maskb =  video_control[10][2:0];
-// FLIP A / FLIP B (video_control[9] bits 5/4, kangaroo.cpp:364-365), XORed with the OSD
+// FLIP A / FLIP B (video_control[9] bits 5/4), XORed with the OSD
 // CRT Flip so it reuses the game's own mirror rather than adding a second one.
 wire [7:0] xora = (video_control[9][5] ^ crt_flip) ? 8'hFF : 8'h00;
 wire [7:0] xorb = (video_control[9][4] ^ crt_flip) ? 8'hFF : 8'h00;
@@ -908,7 +805,7 @@ wire [7:0] vram_slice_b = (scan_effxb_slice == 2'd0) ? scan_word_b[7:0] :
 wire [3:0] pixa_raw = vram_slice_a[3:0];   // Plane A = low nibble
 wire [3:0] pixb_raw = vram_slice_b[7:4];   // Plane B = high nibble
 
-// Priority compositing (MAME logic)
+// Priority compositing
 // Even pixels (first of pair): full brightness, no KOS1 masking
 // Odd pixels (second of pair): apply KOS1 color mask for Z=0 pixels
 // arcade_video samples the core's RGB once per h_cnt at ce_pix_2x, so consecutive display
@@ -930,10 +827,17 @@ always_comb begin
         final_color = final_color | pixb_final[2:0];
 end
 
-// Output — BGR 3-bit palette (MAME: PALETTE(config, m_palette, palette_device::BGR_3BIT))
+// Output — BGR 3-bit palette
 wire active_video = ~video_hblank & ~video_vblank;
 assign video_r = active_video ? {final_color[2], final_color[2], final_color[2]} : 3'd0;
 assign video_g = active_video ? {final_color[1], final_color[1], final_color[1]} : 3'd0;
 assign video_b = active_video ? {final_color[0], final_color[0]} : 2'd0;
+
+// pooled CPU inputs, assigned after every signal they read is declared
+assign z80_0_i.reset_n = reset; assign z80_0_i.ce = cen_2m5 & ~pause; assign z80_0_i.int_n = n_irq; assign z80_0_i.nmi_n = n_nmi;
+assign z80_0_i.di = cpu_Din;
+assign mb88_0_i.ena = mcu_ena; assign mb88_0_i.reset_n = mcu_reset_n; assign mb88_0_i.k = mcu_k;
+assign mb88_0_i.r_in = {r3_out, r2_out, r1_out, r0_out};   // R ports read back their own latches
+assign mb88_0_i.irq_n = 1'b1; assign mb88_0_i.tc_n = 1'b1; assign mb88_0_i.si_n = 1'b1; assign mb88_0_i.rom_d = mcu_rom_q;
 
 endmodule

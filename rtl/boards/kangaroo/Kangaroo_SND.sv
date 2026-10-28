@@ -26,16 +26,20 @@ module Kangaroo_SND
     // VBlank for IRQ
     input         vblank,
 
-    // Sound ROM loading (index 1)
-    input  [24:0] ioctl_addr,
-    input   [7:0] ioctl_data,
-    input         ioctl_wr,
-    input         sndrom_cs_i,       // Directly from ioctl_index == 1
-
     // Audio output
     output signed [15:0] sound_out,
 
-    input         pause
+    input         pause,
+
+    // shared CPU / AY pool, sound ROM block and RAM pool block (rtl/kangaroo_dispatcher.sv)
+    output chip_pool_pkg::z80r_i_t z80_1_i,
+    input  chip_pool_pkg::z80r_o_t z80_1_o,
+    output chip_pool_pkg::ayr_i_t  ay_0_i,
+    input  chip_pool_pkg::ay_o_t   ay_0_o,
+    output [11:0] snd_rom_a,
+    input   [7:0] snd_rom_d,
+    output ram_pool_pkg::pram_i_t sp_i,        // sound RAM (single-port block, port A)
+    input  ram_pool_pkg::pram_o_t sp_o
 );
 
 //------------------------------------------------------- Clock Enables -------------------------------------------------------//
@@ -54,24 +58,9 @@ wire [15:0] snd_A;
 wire  [7:0] snd_Dout;
 wire n_m1, n_mreq, n_iorq, n_rd, n_wr, n_rfsh;
 
-T80s #(.Mode(0), .T2Write(1), .IOWait(1)) sound_cpu
-(
-    .RESET_n(reset),
-    .CLK(clk_10m),
-    .CEN(cen_2m5 & ~pause),
-    .INT_n(n_irq),
-    .NMI_n(1'b1),
-    .BUSRQ_n(1'b1),
-    .M1_n(n_m1),
-    .MREQ_n(n_mreq),
-    .IORQ_n(n_iorq),
-    .RD_n(n_rd),
-    .WR_n(n_wr),
-    .RFSH_n(n_rfsh),
-    .A(snd_A),
-    .DI(snd_Din),
-    .DO(snd_Dout)
-);
+assign n_m1 = z80_1_o.m1_n; assign n_mreq = z80_1_o.mreq_n; assign n_iorq = z80_1_o.iorq_n;
+assign n_rd = z80_1_o.rd_n; assign n_wr = z80_1_o.wr_n; assign n_rfsh = z80_1_o.rfsh_n;
+assign snd_A = z80_1_o.a; assign snd_Dout = z80_1_o.dout;
 
 //------------------------------------------------------ Address Decoding ------------------------------------------------------//
 
@@ -99,29 +88,15 @@ wire [7:0] snd_Din =
 
 //-------------------------------------------------------- Sound ROM -----------------------------------------------------------//
 
-eprom_4k sndrom
-(
-    .ADDR(snd_A[11:0]),
-    .CLK(clk_10m),
-    .DATA(sndrom_D),
-    .ADDR_DL(ioctl_addr),
-    .CLK_DL(clk_10m),
-    .DATA_IN(ioctl_data),
-    .CS_DL(sndrom_cs_i),
-    .WR(ioctl_wr)
-);
+assign snd_rom_a = snd_A[11:0];
+assign sndrom_D = snd_rom_d;
 
 //-------------------------------------------------------- Sound RAM -----------------------------------------------------------//
 
 // 1KB RAM at 0x4000-0x43FF (mirrored to 0x4FFF)
-spram #(.DATA_WIDTH(8), .ADDR_WIDTH(10)) sndram
-(
-    .clk(clk_10m),
-    .addr(snd_A[9:0]),
-    .data(snd_Dout),
-    .q(sndram_D),
-    .we(cs_sndram & ~n_wr)
-);
+assign sp_i.a_addr = {5'd0, snd_A[9:0]}; assign sp_i.a_d = snd_Dout; assign sp_i.a_we = cs_sndram & ~n_wr;
+assign sp_i.b_addr = 15'd0; assign sp_i.b_d = 8'd0; assign sp_i.b_we = 1'b0;
+assign sndram_D = sp_o.a_q;
 
 //------------------------------------------------------- AY-3-8910 -----------------------------------------------------------//
 
@@ -134,22 +109,9 @@ wire ay_bc1  = cs_ay_addr;
 
 wire [7:0] ayA_raw, ayB_raw, ayC_raw;
 
-jt49_bus #(.COMP(3'b010)) ay_chip
-(
-    .rst_n(reset),
-    .clk(clk_10m),
-    .clk_en(cen_1m25),
-    .bdir(ay_bdir),
-    .bc1(ay_bc1),
-    .din(snd_Dout),
-    .sel(1'b1),        // No additional clock division
-    .dout(ay_Dout),
-    .A(ayA_raw),
-    .B(ayB_raw),
-    .C(ayC_raw),
-    .IOA_in(8'h00),
-    .IOB_in(8'h00)
-);
+assign ay_0_i.rst_n = reset; assign ay_0_i.ce = cen_1m25; assign ay_0_i.bdir = ay_bdir; assign ay_0_i.bc1 = ay_bc1;
+assign ay_0_i.din = snd_Dout; assign ay_0_i.ioa_in = 8'h00; assign ay_0_i.iob_in = 8'h00;
+assign ay_Dout = ay_0_o.dout; assign ayA_raw = ay_0_o.a; assign ayB_raw = ay_0_o.b; assign ayC_raw = ay_0_o.c;
 
 //-------------------------------------------------------- VBlank IRQ ----------------------------------------------------------//
 
@@ -181,5 +143,9 @@ wire [9:0] ay_sum = {2'b00, ayA_raw} + {2'b00, ayB_raw} + {2'b00, ayC_raw};
 wire signed [15:0] ay_signed = {1'b0, ay_sum, 5'd0} - 16'sd12288;  // rough center + scale
 
 assign sound_out = ay_signed;
+
+// pooled CPU inputs, assigned after every signal they read is declared
+assign z80_1_i.reset_n = reset; assign z80_1_i.ce = cen_2m5 & ~pause; assign z80_1_i.int_n = n_irq; assign z80_1_i.nmi_n = 1'b1;
+assign z80_1_i.di = snd_Din;
 
 endmodule
